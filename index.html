@@ -36,6 +36,28 @@
     padding: 12px 16px; border-radius: 14px; }
   .legend span:nth-child(odd) { text-align: center; font-size: 20px; }
   #newRecord { color: #ffd447; font-weight: 800; font-size: 20px; }
+  .btn2 { margin-top: 14px; font-size: 17px; padding: 10px 28px; border: 2px solid #5ad1ff;
+    border-radius: 999px; background: transparent; color: #5ad1ff; font-weight: 700; }
+  .btn2:disabled { opacity: .5; }
+
+  /* 랭킹 */
+  #submitBox { margin-top: 16px; display: flex; gap: 8px; width: 100%; max-width: 320px; }
+  #nameInput { flex: 1; min-width: 0; font-size: 17px; padding: 10px 14px; border-radius: 12px;
+    border: 2px solid rgba(255,255,255,.2); background: rgba(255,255,255,.08); color: #fff;
+    -webkit-user-select: text; user-select: text; }
+  #nameInput:focus { outline: none; border-color: #ffd447; }
+  #submitBtn { font-size: 16px; padding: 10px 16px; border: 0; border-radius: 12px;
+    background: #5ad1ff; color: #1b1f3b; font-weight: 800; white-space: nowrap; }
+  #submitBtn:disabled { opacity: .5; }
+  #submitMsg { min-height: 20px; font-size: 14px !important; color: #5ad1ff; }
+  .rankList { list-style: none; padding: 0; margin: 8px 0 0; width: 100%; max-width: 320px; }
+  .rankList li { display: flex; align-items: center; gap: 10px; padding: 9px 14px; margin: 5px 0;
+    background: rgba(255,255,255,.07); border-radius: 12px; font-size: 16px; }
+  .rankList li.me { background: rgba(255,212,71,.22); outline: 2px solid #ffd447; }
+  .rankList .no { width: 28px; text-align: center; font-weight: 800; color: #ffd447; }
+  .rankList .nm { flex: 1; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .rankList .sc { font-weight: 800; }
+  .rankMsg { opacity: .7; font-size: 15px; margin-top: 12px !important; }
 
   #hudBtns { position: fixed; top: calc(var(--top) + 64px); right: 12px; display: flex; gap: 8px; }
   #hudBtns button { width: 42px; height: 42px; border-radius: 50%; border: 0; font-size: 20px;
@@ -67,6 +89,15 @@
   <p>연속으로 잡으면 콤보 보너스!</p>
   <p id="best"></p>
   <button class="btn" id="startBtn">시작</button>
+  <button class="btn2" id="rankBtn">🏆 랭킹 보기</button>
+</div>
+
+<div id="rankMenu" class="overlay hidden">
+  <h1>🏆 랭킹</h1>
+  <h2>모두의 TOP 10</h2>
+  <ul class="rankList" id="rankList"></ul>
+  <p class="rankMsg" id="rankMsg"></p>
+  <button class="btn" id="rankCloseBtn">닫기</button>
 </div>
 
 <div id="pauseMenu" class="overlay hidden">
@@ -81,7 +112,13 @@
   <p id="newRecord" class="hidden">🎉 새 최고 기록!</p>
   <p id="overStats"></p>
   <p id="best2"></p>
+  <div id="submitBox">
+    <input id="nameInput" type="text" maxlength="10" placeholder="닉네임" autocomplete="off" enterkeyhint="done">
+    <button id="submitBtn">랭킹 등록</button>
+  </div>
+  <p id="submitMsg"></p>
   <button class="btn" id="retryBtn">다시 하기</button>
+  <button class="btn2" id="rankBtn2">🏆 랭킹 보기</button>
 </div>
 
 <script>
@@ -199,7 +236,7 @@ canvas.addEventListener('mousedown', e => onDown(e.clientX));
 canvas.addEventListener('mousemove', e => { if (e.buttons) onMove(e.clientX); });
 
 // ===== 버튼 =====
-function show(id) { ['menu', 'pauseMenu', 'overMenu'].forEach(m => $(m).classList.toggle('hidden', m !== id)); }
+function show(id) { ['menu', 'pauseMenu', 'overMenu', 'rankMenu'].forEach(m => $(m).classList.toggle('hidden', m !== id)); }
 function startGame() {
   show(null); $('hudBtns').classList.remove('hidden');
   newGame(); paused = false;
@@ -535,8 +572,107 @@ function gameOver() {
   $('overStats').textContent = `레벨 ${s.level} · 최대 콤보 ${s.maxCombo} · 잡은 별 ${s.caught}개`;
   showBest();
   $('hudBtns').classList.add('hidden');
+  lastResult = { score: s.score, level: s.level, submitted: false };
+  $('nameInput').value = load('name', '');
+  $('submitBtn').disabled = s.score <= 0;
+  $('submitBtn').textContent = '랭킹 등록';
+  $('submitMsg').textContent = s.score <= 0 ? '1점 이상이면 랭킹에 등록할 수 있어요' : '';
   setTimeout(() => show('overMenu'), 500);
 }
+
+// ===== 온라인 랭킹 (Firebase Firestore) =====
+// 이 값들은 웹에 공개해도 되는 설정값이에요. 점수 조작은 Firebase 보안 규칙(firestore.rules)으로 막아요.
+const FIREBASE = {
+  apiKey: 'AIzaSyA5tuonUw2EDO7shGrFqIwhI8HaXgbWe9I',
+  projectId: 'phonegame-edbcc',
+};
+const DB_URL = `https://firestore.googleapis.com/v1/projects/${FIREBASE.projectId}/databases/(default)/documents`;
+let lastResult = null;
+let myLastDocId = load('myLastDocId', null);
+let rankReturnTo = 'menu';
+
+async function fetchTop(n = 10) {
+  const res = await fetch(`${DB_URL}:runQuery?key=${FIREBASE.apiKey}`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ structuredQuery: {
+      from: [{ collectionId: 'scores' }],
+      orderBy: [{ field: { fieldPath: 'score' }, direction: 'DESCENDING' }],
+      limit: n,
+    } }),
+  });
+  if (!res.ok) throw new Error('랭킹 불러오기 실패 ' + res.status);
+  const rows = await res.json();
+  return rows.filter(r => r.document).map(r => ({
+    id: r.document.name.split('/').pop(),
+    name: r.document.fields.name?.stringValue || '???',
+    score: Number(r.document.fields.score?.integerValue || 0),
+  }));
+}
+
+async function submitScore(name, score, level) {
+  const id = Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
+  const res = await fetch(`${DB_URL}:commit?key=${FIREBASE.apiKey}`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ writes: [{
+      update: {
+        name: `projects/${FIREBASE.projectId}/databases/(default)/documents/scores/${id}`,
+        fields: { name: { stringValue: name }, score: { integerValue: String(score) },
+                  level: { integerValue: String(level) } },
+      },
+      updateTransforms: [{ fieldPath: 'createdAt', setToServerValue: 'REQUEST_TIME' }],
+      currentDocument: { exists: false },
+    }] }),
+  });
+  if (!res.ok) throw new Error('등록 실패 ' + res.status);
+  return id;
+}
+
+async function openRanking(from) {
+  rankReturnTo = from;
+  show('rankMenu');
+  const list = $('rankList'), msg = $('rankMsg');
+  list.innerHTML = ''; msg.textContent = '불러오는 중...';
+  try {
+    const top = await fetchTop(10);
+    msg.textContent = top.length ? '' : '아직 기록이 없어요. 첫 번째 주인공이 되어 보세요!';
+    const medals = ['🥇', '🥈', '🥉'];
+    top.forEach((r, i) => {
+      const li = document.createElement('li');
+      if (r.id === myLastDocId) li.className = 'me';
+      const no = document.createElement('span'); no.className = 'no'; no.textContent = medals[i] || (i + 1);
+      const nm = document.createElement('span'); nm.className = 'nm'; nm.textContent = r.name; // textContent로 안전하게 표시
+      const sc = document.createElement('span'); sc.className = 'sc'; sc.textContent = r.score;
+      li.append(no, nm, sc); list.append(li);
+    });
+  } catch (e) {
+    msg.textContent = '랭킹을 불러오지 못했어요. 인터넷 연결을 확인해 주세요.';
+  }
+}
+
+$('rankBtn').onclick = () => openRanking('menu');
+$('rankBtn2').onclick = () => openRanking('overMenu');
+$('rankCloseBtn').onclick = () => show(rankReturnTo);
+
+$('submitBtn').onclick = async () => {
+  if (!lastResult || lastResult.submitted || lastResult.score <= 0) return;
+  const name = $('nameInput').value.trim().slice(0, 10);
+  if (!name) { $('submitMsg').textContent = '닉네임을 입력해 주세요'; $('nameInput').focus(); return; }
+  save('name', name);
+  $('nameInput').blur();
+  $('submitBtn').disabled = true; $('submitMsg').textContent = '등록 중...';
+  try {
+    myLastDocId = await submitScore(name, lastResult.score, lastResult.level);
+    save('myLastDocId', myLastDocId);
+    lastResult.submitted = true;
+    $('submitBtn').textContent = '등록 완료';
+    $('submitMsg').textContent = '✅ 등록됐어요!';
+    openRanking('overMenu');
+  } catch (e) {
+    $('submitBtn').disabled = false;
+    $('submitMsg').textContent = '등록하지 못했어요. 잠시 후 다시 시도해 주세요.';
+  }
+};
+$('nameInput').addEventListener('keydown', e => { if (e.key === 'Enter') $('submitBtn').click(); });
 </script>
 </body>
 </html>
