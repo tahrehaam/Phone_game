@@ -1,6 +1,6 @@
 {
-  "name": "별 잡기",
-  "short_name": "별 잡기",
+  "name": "미니 게임 모음",
+  "short_name": "미니 게임",
   "start_url": "./",
   "display": "fullscreen",
   "orientation": "portrait",

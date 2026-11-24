@@ -1,26 +1,24 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    // 랭킹 점수: 누구나 보기 가능, 새 기록 추가만 가능 (수정·삭제는 불가)
-    match /scores/{id} {
-      allow read: if true;
-      allow create: if request.resource.data.keys().hasOnly(['name', 'score', 'level', 'createdAt'])
-        && request.resource.data.keys().hasAll(['name', 'score', 'level', 'createdAt'])
-        && request.resource.data.name is string
-        && request.resource.data.name.size() >= 1
-        && request.resource.data.name.size() <= 10
-        && request.resource.data.score is int
-        && request.resource.data.score >= 1
-        && request.resource.data.score <= 100000
-        && request.resource.data.level is int
-        && request.resource.data.level >= 1
-        && request.resource.data.level <= 1000
-        && request.resource.data.createdAt == request.time;
-      allow update, delete: if false;
+    // 게임별 랭킹 저장소 이름 (common.js의 GAMES 목록과 같아야 해요)
+    function rankingCols() {
+      return ['scores', 'scores_snake', 'scores_jump', 'scores_mole', 'scores_brick', 'scores_stack'];
     }
-    // 그 외 모든 데이터는 접근 금지
-    match /{document=**} {
-      allow read, write: if false;
+    function validScore() {
+      let d = request.resource.data;
+      return d.keys().hasOnly(['name', 'score', 'level', 'createdAt'])
+        && d.keys().hasAll(['name', 'score', 'level', 'createdAt'])
+        && d.name is string && d.name.size() >= 1 && d.name.size() <= 10
+        && d.score is int && d.score >= 1 && d.score <= 1000000
+        && d.level is int && d.level >= 1 && d.level <= 1000
+        && d.createdAt == request.time;
+    }
+    // 랭킹: 누구나 보기 가능, 새 기록 추가만 가능 (수정·삭제 불가)
+    match /{col}/{id} {
+      allow read: if col in rankingCols();
+      allow create: if col in rankingCols() && validScore();
+      allow update, delete: if false;
     }
   }
 }

@@ -1,0 +1,317 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#1b1f3b">
+<link rel="manifest" href="../manifest.json">
+<link rel="apple-touch-icon" href="../icon-180.png">
+<title>별 잡기</title>
+<link rel="stylesheet" href="../common.css">
+</head>
+<body>
+<canvas id="game"></canvas>
+<script src="../common.js"></script>
+<script>
+// ===== 별 잡기 =====
+// 설정 (숫자를 바꾸면 난이도가 바뀌어요)
+const LIVES = 3, MAX_LIVES = 5;
+const START_SPEED = 170;     // 처음 낙하 속도 (픽셀/초)
+const SPEEDUP = 5;           // 초당 속도 증가량
+const POINTS_PER_LEVEL = 25; // 몇 점마다 레벨업
+
+const KINDS = {
+  star:   { weight: 62,  r: 18 },
+  gold:   { weight: 6,   r: 20 },
+  bomb:   { weight: 24,  r: 17 },
+  heart:  { weight: 2.5, r: 17 },
+  shield: { weight: 2,   r: 17 },
+  magnet: { weight: 2,   r: 17 },
+  slow:   { weight: 1.5, r: 17 },
+};
+const EMOJI = { heart: '❤️', shield: '🛡️', magnet: '🧲', slow: '⏳' };
+
+const canvas = document.getElementById('game');
+let sky = [];
+const view = G.fitCanvas(canvas, (W, H) => {
+  sky = [];
+  for (let i = 0; i < 70; i++) sky.push({ x: Math.random() * W, y: Math.random() * H,
+    s: Math.random() * 1.6 + 0.4, v: Math.random() * 20 + 8, t: Math.random() * 6 });
+});
+const ctx = view.ctx;
+const sfx = {
+  star: c => G.sfx.good(c), gold: G.sfx.great, bomb: G.sfx.bad, miss: G.sfx.miss,
+  block: () => G.beep(400, 0.2, 'square', 0.1, 300), power: G.sfx.power, level: G.sfx.level,
+};
+
+const game = G.shell({
+  id: 'star',
+  legend: [
+    ['⭐', '별 +1점 (놓치면 ❤️ -1)'], ['🌟', '황금별 +5점'], ['💣', '폭탄! 피하세요'],
+    ['❤️', '목숨 +1'], ['🛡️', '방패: 폭탄 1번 막기'], ['🧲', '자석: 별 끌어당기기'], ['⏳', '슬로우: 잠깐 느려져요'],
+  ],
+  tip: '손가락으로 끌어서 바구니를 움직여요 · 연속으로 잡으면 콤보!',
+  onStart: newGame,
+});
+
+let state = null;
+function newGame() {
+  const { W } = view;
+  state = {
+    score: 0, lives: LIVES, level: 1, combo: 0, maxCombo: 0, caught: 0,
+    items: [], particles: [], texts: [],
+    spawnTimer: 0.5, speed: START_SPEED, time: 0,
+    basketX: W / 2, targetX: W / 2, basketSquash: 0,
+    shield: 0, magnet: 0, slow: 0, shake: 0, flash: 0, banner: null,
+  };
+  game.loop(dt => { update(dt); draw(); });
+}
+
+// 조작: 손가락이 바구니를 가리지 않도록 "끌어서" 움직이는 방식
+let dragStartX = 0, dragStartBasket = 0;
+function onDown(x) { if (!state) return; dragStartX = x; dragStartBasket = state.targetX; }
+function onMove(x) { if (!state) return; state.targetX = Math.max(0, Math.min(view.W, dragStartBasket + (x - dragStartX) * 1.3)); }
+canvas.addEventListener('touchstart', e => { e.preventDefault(); onDown(e.touches[0].clientX); }, { passive: false });
+canvas.addEventListener('touchmove',  e => { e.preventDefault(); onMove(e.touches[0].clientX); }, { passive: false });
+canvas.addEventListener('mousedown', e => onDown(e.clientX));
+canvas.addEventListener('mousemove', e => { if (e.buttons) onMove(e.clientX); });
+
+function pickKind() {
+  let total = 0;
+  for (const k in KINDS) total += KINDS[k].weight;
+  let r = Math.random() * total;
+  for (const k in KINDS) { r -= KINDS[k].weight; if (r <= 0) return k; }
+  return 'star';
+}
+function spawn() {
+  const { W } = view;
+  let kind = pickKind();
+  if (kind === 'heart' && state.lives >= MAX_LIVES) kind = 'star';
+  const r = KINDS[kind].r;
+  const fast = kind === 'gold' ? 1.35 : 1;
+  state.items.push({ kind, x: r + 10 + Math.random() * (W - 2 * r - 20), y: -r, r,
+    vy: state.speed * (0.8 + Math.random() * 0.4) * fast,
+    vx: kind === 'bomb' && state.level >= 3 ? (Math.random() - 0.5) * 60 : 0, // 레벨 3부터 폭탄이 흔들려요
+    rot: Math.random() * 6, spin: (Math.random() - 0.5) * 4 });
+}
+
+function burst(x, y, color, n = 12) {
+  for (let i = 0; i < n; i++) {
+    const a = Math.random() * Math.PI * 2, sp = 80 + Math.random() * 220;
+    state.particles.push({ x, y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp - 80,
+      life: 0.6 + Math.random() * 0.4, color, size: 2 + Math.random() * 3 });
+  }
+}
+function floatText(x, y, text, color = '#fff', size = 22) { state.texts.push({ x, y, text, color, size, life: 0.9 }); }
+function basketGeom() { return { bw: Math.min(120, view.W * 0.3), by: view.H - 80 - G.safe.bottom }; }
+
+function update(dt) {
+  const s = state, { W, H } = view;
+  s.time += dt;
+  s.speed += SPEEDUP * dt;
+  const timeScale = s.slow > 0 ? 0.5 : 1;
+
+  s.basketX += (s.targetX - s.basketX) * Math.min(1, dt * 25);
+  s.basketSquash = Math.max(0, s.basketSquash - dt * 4);
+  s.shield = Math.max(0, s.shield - dt);
+  s.magnet = Math.max(0, s.magnet - dt);
+  s.slow = Math.max(0, s.slow - dt);
+  s.shake = Math.max(0, s.shake - dt);
+  s.flash = Math.max(0, s.flash - dt);
+  if (s.banner) { s.banner.life -= dt; if (s.banner.life <= 0) s.banner = null; }
+
+  s.spawnTimer -= dt * timeScale;
+  if (s.spawnTimer <= 0) { spawn(); s.spawnTimer = Math.max(0.28, 0.85 - s.level * 0.06); }
+
+  const { bw, by } = basketGeom();
+  for (const it of s.items) {
+    if (s.magnet > 0 && (it.kind === 'star' || it.kind === 'gold')) it.x += (s.basketX - it.x) * Math.min(1, dt * 3);
+    it.x += it.vx * dt * timeScale;
+    if (it.x < it.r || it.x > W - it.r) it.vx *= -1;
+    it.y += it.vy * dt * timeScale;
+    it.rot += it.spin * dt;
+    const caught = it.y + it.r > by && it.y - it.r < by + 22 && Math.abs(it.x - s.basketX) < bw / 2 + it.r * 0.4;
+    if (caught) { it.dead = true; catchItem(it); }
+    else if (it.y - it.r > H) {
+      it.dead = true;
+      if (it.kind === 'star' || it.kind === 'gold') {
+        s.lives--; s.combo = 0; s.flash = 0.25; sfx.miss();
+        floatText(it.x, H - 40 - G.safe.bottom, '놓쳤다!', '#ff8a95');
+        G.vibrate(60);
+      }
+    }
+  }
+  s.items = s.items.filter(i => !i.dead);
+  for (const p of s.particles) { p.x += p.vx * dt; p.y += p.vy * dt; p.vy += 500 * dt; p.life -= dt; }
+  s.particles = s.particles.filter(p => p.life > 0);
+  for (const t of s.texts) { t.y -= 50 * dt; t.life -= dt; }
+  s.texts = s.texts.filter(t => t.life > 0);
+  for (const st of sky) { st.y += st.v * dt * timeScale; if (st.y > H) { st.y = 0; st.x = Math.random() * W; } }
+
+  if (s.lives <= 0) {
+    draw();
+    game.over(s.score, s.level, `레벨 ${s.level} · 최대 콤보 ${s.maxCombo} · 잡은 별 ${s.caught}개`);
+  }
+}
+
+function addScore(base, x, y, color) {
+  const s = state;
+  s.combo++; s.caught++;
+  s.maxCombo = Math.max(s.maxCombo, s.combo);
+  const mult = 1 + Math.floor(s.combo / 10);
+  const pts = base * mult;
+  s.score += pts;
+  floatText(x, y - 30, mult > 1 ? `+${pts} x${mult}` : `+${pts}`, color, mult > 1 ? 26 : 22);
+  if (s.combo % 10 === 0) floatText(view.W / 2, view.H * 0.4, `${s.combo} 콤보!`, '#5ad1ff', 34);
+  const newLevel = 1 + Math.floor(s.score / POINTS_PER_LEVEL);
+  if (newLevel > s.level) { s.level = newLevel; s.banner = { text: `레벨 ${s.level}`, life: 1.5 }; sfx.level(); }
+}
+
+function catchItem(it) {
+  const s = state;
+  s.basketSquash = 1;
+  const { by } = basketGeom();
+  switch (it.kind) {
+    case 'star': addScore(1, it.x, by, '#ffd447'); burst(it.x, by, '#ffd447', 10); sfx.star(s.combo); break;
+    case 'gold': addScore(5, it.x, by, '#ffb000'); burst(it.x, by, '#ffb000', 24); sfx.gold(); break;
+    case 'bomb':
+      if (s.shield > 0) {
+        s.shield = 0; burst(it.x, by, '#5ad1ff', 18); sfx.block(); floatText(it.x, by - 30, '막았다!', '#5ad1ff');
+      } else {
+        s.lives--; s.combo = 0; s.shake = 0.35; s.flash = 0.3;
+        burst(it.x, by, '#ff4d5e', 28); sfx.bomb(); floatText(it.x, by - 30, '펑!', '#ff4d5e', 28); G.vibrate(180);
+      }
+      break;
+    case 'heart':  s.lives = Math.min(MAX_LIVES, s.lives + 1); burst(it.x, by, '#ff6b8b', 16); sfx.power(); floatText(it.x, by - 30, '목숨 +1', '#ff6b8b'); break;
+    case 'shield': s.shield = 10; burst(it.x, by, '#5ad1ff', 16); sfx.power(); floatText(it.x, by - 30, '방패!', '#5ad1ff'); break;
+    case 'magnet': s.magnet = 6;  burst(it.x, by, '#c084fc', 16); sfx.power(); floatText(it.x, by - 30, '자석!', '#c084fc'); break;
+    case 'slow':   s.slow = 5;    burst(it.x, by, '#7cf0b0', 16); sfx.power(); floatText(it.x, by - 30, '슬로우!', '#7cf0b0'); break;
+  }
+}
+
+function drawStar(x, y, r, rot, color, glow) {
+  ctx.save(); ctx.translate(x, y); ctx.rotate(rot);
+  if (glow) { ctx.shadowColor = color; ctx.shadowBlur = 18; }
+  ctx.beginPath();
+  for (let i = 0; i < 10; i++) { const rr = i % 2 ? r * 0.45 : r, a = i * Math.PI / 5; ctx.lineTo(rr * Math.sin(a), -rr * Math.cos(a)); }
+  ctx.closePath(); ctx.fillStyle = color; ctx.fill();
+  ctx.restore();
+}
+function drawBomb(it) {
+  ctx.save(); ctx.translate(it.x, it.y);
+  ctx.beginPath(); ctx.arc(0, 2, it.r, 0, Math.PI * 2);
+  ctx.fillStyle = '#2a2a3a'; ctx.fill();
+  ctx.lineWidth = 3; ctx.strokeStyle = '#ff4d5e'; ctx.stroke();
+  ctx.fillStyle = '#ff4d5e'; ctx.font = `bold ${it.r}px sans-serif`;
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText('!', 0, 3);
+  const f = 3 + Math.sin(state.time * 30) * 1.5;
+  ctx.beginPath(); ctx.arc(it.r * 0.5, -it.r - 2, f, 0, Math.PI * 2);
+  ctx.fillStyle = '#ffb000'; ctx.fill();
+  ctx.restore();
+}
+
+function drawSky(t, level) {
+  const { W, H } = view;
+  const hue = (230 + level * 18) % 360;
+  const g = ctx.createLinearGradient(0, 0, 0, H);
+  g.addColorStop(0, `hsl(${hue},45%,10%)`); g.addColorStop(1, `hsl(${hue + 30},45%,22%)`);
+  ctx.fillStyle = g; ctx.fillRect(-20, -20, W + 40, H + 40);
+  for (const st of sky) {
+    ctx.globalAlpha = 0.4 + 0.6 * Math.abs(Math.sin(t * 2 + st.t));
+    ctx.fillStyle = '#fff'; ctx.fillRect(st.x, st.y, st.s, st.s);
+  }
+  ctx.globalAlpha = 1;
+}
+
+function draw() {
+  const s = state, { W, H } = view;
+  ctx.save();
+  if (s.shake > 0) { const k = 14 * s.shake / 0.35; ctx.translate((Math.random() - 0.5) * k, (Math.random() - 0.5) * k); }
+  drawSky(s.time, s.level);
+
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  for (const it of s.items) {
+    if (it.kind === 'star') drawStar(it.x, it.y, it.r, it.rot * 0.3, '#ffd447', false);
+    else if (it.kind === 'gold') drawStar(it.x, it.y, it.r, it.rot, '#ffb000', true);
+    else if (it.kind === 'bomb') drawBomb(it);
+    else {
+      ctx.beginPath(); ctx.arc(it.x, it.y, it.r + 6, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(255,255,255,.18)'; ctx.fill();
+      ctx.font = `${it.r * 1.5}px sans-serif`; ctx.fillText(EMOJI[it.kind], it.x, it.y + 1);
+    }
+  }
+
+  const { bw, by } = basketGeom();
+  const sq = s.basketSquash;
+  const w = bw * (1 + sq * 0.12), h = 22 * (1 - sq * 0.25);
+  if (s.magnet > 0) {
+    ctx.beginPath(); ctx.arc(s.basketX, by + 10, bw * 0.8 + Math.sin(s.time * 8) * 4, Math.PI, 0);
+    ctx.strokeStyle = 'rgba(192,132,252,.5)'; ctx.lineWidth = 3; ctx.stroke();
+  }
+  ctx.fillStyle = '#5ad1ff';
+  ctx.beginPath(); ctx.roundRect(s.basketX - w / 2, by + (22 - h), w, h, 11); ctx.fill();
+  ctx.fillStyle = 'rgba(255,255,255,.35)';
+  ctx.beginPath(); ctx.roundRect(s.basketX - w / 2 + 8, by + (22 - h) + 4, w - 16, 4, 2); ctx.fill();
+  if (s.shield > 0) {
+    ctx.beginPath(); ctx.ellipse(s.basketX, by + 11, w / 2 + 14, 28, 0, 0, Math.PI * 2);
+    ctx.strokeStyle = `rgba(90,209,255,${s.shield < 2 ? 0.3 + 0.5 * Math.abs(Math.sin(s.time * 10)) : 0.8})`;
+    ctx.lineWidth = 3; ctx.stroke();
+  }
+
+  for (const p of s.particles) {
+    ctx.globalAlpha = Math.max(0, p.life); ctx.fillStyle = p.color;
+    ctx.fillRect(p.x - p.size / 2, p.y - p.size / 2, p.size, p.size);
+  }
+  for (const t of s.texts) {
+    ctx.globalAlpha = Math.min(1, t.life * 2);
+    ctx.font = `800 ${t.size}px -apple-system, sans-serif`;
+    ctx.lineWidth = 4; ctx.strokeStyle = 'rgba(0,0,0,.4)';
+    ctx.strokeText(t.text, t.x, t.y); ctx.fillStyle = t.color; ctx.fillText(t.text, t.x, t.y);
+  }
+  ctx.globalAlpha = 1;
+  ctx.restore();
+
+  if (s.flash > 0) { ctx.fillStyle = `rgba(255,60,80,${s.flash})`; ctx.fillRect(0, 0, W, H); }
+
+  const top = G.safe.top + 36;
+  ctx.textBaseline = 'middle';
+  ctx.fillStyle = '#fff'; ctx.font = '800 28px -apple-system, sans-serif';
+  ctx.textAlign = 'left'; ctx.fillText(`${s.score}`, 16, top);
+  ctx.font = '600 14px -apple-system, sans-serif'; ctx.fillStyle = 'rgba(255,255,255,.7)';
+  ctx.fillText(`레벨 ${s.level}` + (s.combo >= 3 ? `  ·  콤보 ${s.combo}` : ''), 16, top + 26);
+  ctx.textAlign = 'right'; ctx.font = '22px sans-serif';
+  ctx.fillText('❤️'.repeat(Math.max(0, s.lives)), W - 16, top);
+
+  const bars = [];
+  if (s.shield > 0) bars.push(['🛡️', s.shield / 10, '#5ad1ff']);
+  if (s.magnet > 0) bars.push(['🧲', s.magnet / 6, '#c084fc']);
+  if (s.slow > 0) bars.push(['⏳', s.slow / 5, '#7cf0b0']);
+  bars.forEach(([icon, frac, color], i) => {
+    const y = top + 56 + i * 26;
+    ctx.textAlign = 'left'; ctx.font = '16px sans-serif'; ctx.fillStyle = '#fff'; ctx.fillText(icon, 16, y);
+    ctx.fillStyle = 'rgba(255,255,255,.15)'; ctx.fillRect(42, y - 4, 70, 8);
+    ctx.fillStyle = color; ctx.fillRect(42, y - 4, 70 * frac, 8);
+  });
+
+  if (s.banner) {
+    const a = Math.min(1, s.banner.life * 2);
+    const scale = 1 + (1.5 - s.banner.life) * 0.1;
+    ctx.save(); ctx.globalAlpha = a; ctx.translate(W / 2, H * 0.3); ctx.scale(scale, scale);
+    ctx.textAlign = 'center'; ctx.font = '900 44px -apple-system, sans-serif';
+    ctx.lineWidth = 6; ctx.strokeStyle = 'rgba(0,0,0,.4)'; ctx.strokeText(s.banner.text, 0, 0);
+    ctx.fillStyle = '#ffd447'; ctx.fillText(s.banner.text, 0, 0);
+    ctx.restore();
+  }
+}
+
+// 시작 화면 뒤 배경
+(function idle(now) {
+  if (game && game.running) return;
+  if (!state) { drawSky(now / 1000, 1); for (const st of sky) { st.y += st.v / 60; if (st.y > view.H) st.y = 0; } }
+  requestAnimationFrame(idle);
+})(0);
+</script>
+</body>
+</html>

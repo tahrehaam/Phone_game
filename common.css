@@ -1,0 +1,48 @@
+/* 모든 게임이 같이 쓰는 스타일 */
+:root { --top: env(safe-area-inset-top, 0px); --bottom: env(safe-area-inset-bottom, 0px);
+  --bg: #1b1f3b; --yellow: #ffd447; --blue: #5ad1ff; --red: #ff4d5e; }
+html, body { margin: 0; height: 100%; background: var(--bg); overflow: hidden;
+  touch-action: none; -webkit-user-select: none; user-select: none;
+  -webkit-tap-highlight-color: transparent; -webkit-touch-callout: none;
+  font-family: -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", sans-serif; color: #fff; }
+canvas { display: block; width: 100vw; height: 100vh; }
+#safe { position: fixed; top: 0; left: 0; padding-top: var(--top); padding-bottom: var(--bottom);
+  visibility: hidden; pointer-events: none; }
+
+.overlay { position: fixed; inset: 0; display: flex; flex-direction: column;
+  align-items: center; justify-content: center; color: #fff; text-align: center;
+  background: rgba(18,21,44,.9); padding: 24px; padding-top: calc(var(--top) + 24px);
+  box-sizing: border-box; z-index: 10; overflow-y: auto; }
+.overlay h1 { font-size: 40px; margin: 0 0 6px; color: var(--yellow); }
+.overlay h2 { font-size: 20px; margin: 0 0 16px; color: var(--blue); font-weight: 600; }
+.overlay p { margin: 4px 0; opacity: .9; font-size: 16px; }
+.btn { margin-top: 22px; font-size: 22px; padding: 14px 44px; border: 0;
+  border-radius: 999px; background: var(--yellow); color: #1b1f3b; font-weight: 800;
+  box-shadow: 0 6px 0 #c9a024; font-family: inherit; }
+.btn:active { transform: translateY(4px); box-shadow: 0 2px 0 #c9a024; }
+.btn2 { margin-top: 14px; font-size: 17px; padding: 10px 28px; border: 2px solid var(--blue);
+  border-radius: 999px; background: transparent; color: var(--blue); font-weight: 700; font-family: inherit; }
+.link { margin-top: 14px; background: none; border: 0; color: rgba(255,255,255,.7);
+  font-size: 15px; text-decoration: underline; padding: 6px 10px; font-family: inherit; }
+.legend { display: grid; grid-template-columns: auto auto; gap: 6px 14px; margin: 10px 0 4px;
+  text-align: left; font-size: 15px; background: rgba(255,255,255,.06);
+  padding: 12px 16px; border-radius: 14px; max-width: 330px; }
+.legend span:nth-child(odd) { text-align: center; font-size: 20px; }
+.newRecord { color: var(--yellow); font-weight: 800; font-size: 20px !important; }
+.submitMsg { min-height: 20px; font-size: 14px !important; color: var(--blue); margin-top: 14px !important; }
+.retrySubmit { margin-top: 8px; font-size: 15px; padding: 8px 16px; border: 0; border-radius: 12px;
+  background: var(--blue); color: #1b1f3b; font-weight: 800; font-family: inherit; }
+
+.hudBtns { position: fixed; top: calc(var(--top) + 64px); right: 12px; display: flex; gap: 8px; z-index: 5; }
+.hudBtns button { width: 42px; height: 42px; border-radius: 50%; border: 0; font-size: 20px;
+  background: rgba(255,255,255,.14); color: #fff; }
+
+.rankList { list-style: none; padding: 0; margin: 8px 0 0; width: 100%; max-width: 320px; }
+.rankList li { display: flex; align-items: center; gap: 10px; padding: 9px 14px; margin: 5px 0;
+  background: rgba(255,255,255,.07); border-radius: 12px; font-size: 16px; }
+.rankList li.me { background: rgba(255,212,71,.22); outline: 2px solid var(--yellow); }
+.rankList .no { width: 28px; text-align: center; font-weight: 800; color: var(--yellow); }
+.rankList .nm { flex: 1; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rankList .sc { font-weight: 800; }
+.rankMsg { opacity: .7; font-size: 15px; margin-top: 12px !important; }
+.hidden { display: none !important; }

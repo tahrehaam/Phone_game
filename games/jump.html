@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#1b1f3b">
+<link rel="manifest" href="../manifest.json">
+<link rel="apple-touch-icon" href="../icon-180.png">
+<title>점프 점프</title>
+<link rel="stylesheet" href="../common.css">
+</head>
+<body>
+<canvas id="game"></canvas>
+<script src="../common.js"></script>
+<script>
+// ===== 점프 점프 =====
+const GRAVITY = 2600;     // 중력
+const JUMP_V = 860;       // 점프 힘
+const START_SPEED = 300;  // 처음 달리는 속도 (픽셀/초)
+const MAX_SPEED = 720;
+const SPEEDUP = 7;        // 초당 속도 증가
+
+const canvas = document.getElementById('game');
+let hills = [], state = null, ready = false;
+const view = G.fitCanvas(canvas, W => {
+  hills = [];
+  for (let i = 0; i < 8; i++) hills.push({ x: i * W / 4, r: 60 + Math.random() * 80 });
+  if (ready) (state ? draw() : drawIdle());
+});
+const ctx = view.ctx;
+
+const game = G.shell({
+  id: 'jump',
+  legend: [['👆', '화면을 탭하면 점프'], ['✌️', '공중에서 한 번 더 탭 = 2단 점프'], ['🌵', '장애물에 닿으면 끝!'], ['🪙', '코인 +5점']],
+  tip: '달릴수록 빨라져요. 높은 장애물은 2단 점프로!',
+  onStart: newGame,
+});
+
+const groundY = () => view.H - 150 - G.safe.bottom;
+const P = { x: 70, w: 34, h: 38 };
+
+function newGame() {
+  state = {
+    y: 0, vy: 0, jumps: 0, onGround: true, squash: 0,
+    speed: START_SPEED, dist: 0, coins: 0, score: 0, level: 1,
+    obs: [], coinList: [], nextObs: 1.0, parts: [], texts: [], time: 0, dead: false, flash: 0, scroll: 0,
+  };
+  game.loop(dt => { update(dt); draw(); });
+}
+
+function jump() {
+  const s = state;
+  if (!s || s.dead || !game.running || game.paused) return;
+  if (s.jumps >= 2) return;
+  s.vy = -JUMP_V * (s.jumps === 0 ? 1 : 0.85);
+  s.jumps++; s.onGround = false;
+  G.beep(s.jumps === 1 ? 520 : 780, 0.08, 'triangle', 0.12, 200);
+  for (let i = 0; i < 6; i++) s.parts.push({ x: P.x, y: groundY() + s.y, vx: -60 - Math.random() * 80, vy: (Math.random() - 0.5) * 80, life: 0.4, color: '#fff' });
+}
+canvas.addEventListener('touchstart', e => { e.preventDefault(); jump(); }, { passive: false });
+canvas.addEventListener('mousedown', jump);
+document.addEventListener('keydown', e => { if (e.key === ' ' || e.key === 'ArrowUp') { e.preventDefault(); jump(); } });
+
+function spawnObstacle() {
+  const s = state, x = view.W + 40;
+  const r = Math.random();
+  if (r < 0.45) s.obs.push({ x, w: 28, h: 38 + Math.random() * 18 });               // 작은 선인장
+  else if (r < 0.7) s.obs.push({ x, w: 56, h: 36 });                               // 넓은 바위
+  else if (r < 0.88 || s.level < 3) s.obs.push({ x, w: 30, h: 80 + Math.random() * 20, tall: true }); // 높은 것 (2단 점프)
+  else s.obs.push({ x, w: 30, h: 30, fly: true, base: 70 + Math.random() * 20 });   // 날아다니는 것 (레벨 3부터)
+  if (Math.random() < 0.55) s.coinList.push({ x: x + 10, y: -(140 + Math.random() * 60), got: false });
+  s.nextObs = (0.75 + Math.random() * 0.9) * Math.max(0.6, 340 / s.speed);
+}
+
+function hit(a, b) { return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y; }
+
+function update(dt) {
+  const s = state, gy = groundY();
+  s.time += dt;
+  s.flash = Math.max(0, s.flash - dt);
+  for (const p of s.parts) { p.x += p.vx * dt; p.y += p.vy * dt; p.vy += 600 * dt; p.life -= dt; }
+  s.parts = s.parts.filter(p => p.life > 0);
+  for (const t of s.texts) { t.y -= 40 * dt; t.life -= dt; }
+  s.texts = s.texts.filter(t => t.life > 0);
+  if (s.dead) return;
+
+  s.speed = Math.min(MAX_SPEED, s.speed + SPEEDUP * dt);
+  const move = s.speed * dt;
+  s.dist += move; s.scroll += move;
+
+  // 플레이어 물리
+  s.vy += GRAVITY * dt; s.y += s.vy * dt;
+  if (s.y >= 0) { if (!s.onGround) s.squash = 1; s.y = 0; s.vy = 0; s.jumps = 0; s.onGround = true; }
+  s.squash = Math.max(0, s.squash - dt * 5);
+
+  s.nextObs -= dt;
+  if (s.nextObs <= 0) spawnObstacle();
+
+  const box = { x: P.x - P.w / 2 + 5, y: gy + s.y - P.h + 5, w: P.w - 10, h: P.h - 8 };
+  for (const o of s.obs) {
+    o.x -= move;
+    const oy = o.fly ? gy - o.base + Math.sin(s.time * 5 + o.x * 0.01) * 12 : gy - o.h;
+    o.y = oy;
+    if (!o.passed && o.x + o.w < P.x - P.w / 2) { o.passed = true; }
+    if (hit(box, { x: o.x + 3, y: oy + 3, w: o.w - 6, h: o.h - 3 })) return die();
+  }
+  s.obs = s.obs.filter(o => o.x + o.w > -20);
+  for (const c of s.coinList) {
+    c.x -= move;
+    if (!c.got && Math.hypot(c.x - P.x, gy + c.y - (gy + s.y - P.h / 2)) < 30) {
+      c.got = true; s.coins++; G.sfx.great();
+      s.texts.push({ x: c.x, y: gy + c.y - 20, text: '+5', color: '#ffd447', life: 0.8 });
+    }
+  }
+  s.coinList = s.coinList.filter(c => c.x > -20 && !c.got);
+
+  s.score = Math.floor(s.dist / 100) + s.coins * 5;
+  const lv = 1 + Math.floor(s.dist / 3000);
+  if (lv > s.level) { s.level = lv; G.sfx.level(); s.texts.push({ x: view.W / 2, y: view.H * 0.3, text: `레벨 ${lv}!`, color: '#ffd447', life: 1.3, big: true }); }
+}
+
+function die() {
+  const s = state;
+  s.dead = true; s.flash = 0.4; G.sfx.bad(); G.vibrate(200);
+  for (let i = 0; i < 20; i++) {
+    const a = Math.random() * Math.PI * 2, sp = 80 + Math.random() * 200;
+    s.parts.push({ x: P.x, y: groundY() + s.y - P.h / 2, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp - 100, life: 0.8, color: '#ff9f5a' });
+  }
+  setTimeout(() => { if (state === s) game.over(s.score, s.level, `달린 거리 ${Math.floor(s.dist / 10)}m · 코인 ${s.coins}개`); }, 700);
+}
+
+// ----- 그리기 -----
+function drawWorld(scroll, t) {
+  const { W, H } = view, gy = groundY();
+  const sky = ctx.createLinearGradient(0, 0, 0, gy);
+  sky.addColorStop(0, '#2a3a7a'); sky.addColorStop(1, '#ff9f7a');
+  ctx.fillStyle = sky; ctx.fillRect(0, 0, W, gy);
+  ctx.fillStyle = 'rgba(255,240,200,.8)'; ctx.beginPath(); ctx.arc(W * 0.75, gy * 0.35, 36, 0, Math.PI * 2); ctx.fill();
+  // 언덕 (천천히 움직여서 멀리 있는 느낌)
+  ctx.fillStyle = '#5a3d6e';
+  for (const h of hills) {
+    const x = ((h.x - scroll * 0.2) % (W + 200) + W + 200) % (W + 200) - 100;
+    ctx.beginPath(); ctx.arc(x, gy, h.r, Math.PI, 0); ctx.fill();
+  }
+  ctx.fillStyle = '#3d2a4a'; ctx.fillRect(0, gy, W, H - gy);
+  ctx.fillStyle = '#7a5a3a'; ctx.fillRect(0, gy, W, 6);
+  ctx.fillStyle = 'rgba(255,255,255,.08)';
+  for (let x = -(scroll % 40); x < W; x += 40) ctx.fillRect(x, gy + 20, 18, 4);
+}
+
+function drawPlayer(y, squash, dead, t) {
+  const gy = groundY();
+  const sw = 1 + squash * 0.25, sh = 1 - squash * 0.2;
+  ctx.save(); ctx.translate(P.x, gy + y);
+  if (dead) ctx.rotate(0.5);
+  ctx.scale(sw, sh);
+  ctx.fillStyle = dead ? '#999' : '#ff9f5a';
+  ctx.beginPath(); ctx.roundRect(-P.w / 2, -P.h, P.w, P.h, 12); ctx.fill();
+  ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(6, -P.h + 13, 6, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = '#222'; ctx.beginPath(); ctx.arc(8, -P.h + 13, 3, 0, Math.PI * 2); ctx.fill();
+  if (y === 0 && !dead) { // 달리는 다리
+    const k = Math.sin(t * 20) * 5;
+    ctx.fillStyle = '#c96f30'; ctx.fillRect(-10 + k, -4, 8, 6); ctx.fillRect(2 - k, -4, 8, 6);
+  }
+  ctx.restore();
+}
+
+function drawIdle() {
+  drawWorld(0, 0);
+  drawPlayer(0, 0, false, 0);
+}
+
+function draw() {
+  const s = state, { W, H } = view, gy = groundY();
+  drawWorld(s.scroll, s.time);
+
+  for (const o of s.obs) {
+    if (o.fly) {
+      ctx.font = '30px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText('🦇', o.x + o.w / 2, o.y + o.h / 2);
+    } else {
+      ctx.fillStyle = o.tall ? '#2f9e5a' : (o.w > 40 ? '#8a7a8a' : '#3fbf6a');
+      ctx.beginPath(); ctx.roundRect(o.x, o.y, o.w, o.h, 8); ctx.fill();
+      ctx.fillStyle = 'rgba(255,255,255,.2)'; ctx.fillRect(o.x + 6, o.y + 6, 4, o.h - 12);
+    }
+  }
+  ctx.font = '26px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  for (const c of s.coinList) {
+    const sc = Math.abs(Math.cos(s.time * 4 + c.x * 0.02));
+    ctx.save(); ctx.translate(c.x, gy + c.y); ctx.scale(0.4 + sc * 0.6, 1); ctx.fillText('🪙', 0, 0); ctx.restore();
+  }
+  drawPlayer(s.y, s.squash, s.dead, s.time);
+  for (const p of s.parts) { ctx.globalAlpha = Math.max(0, p.life * 2); ctx.fillStyle = p.color; ctx.fillRect(p.x - 2, p.y - 2, 4, 4); }
+  for (const t of s.texts) {
+    ctx.globalAlpha = Math.min(1, t.life * 2);
+    ctx.font = `900 ${t.big ? 40 : 20}px -apple-system, sans-serif`;
+    ctx.fillStyle = t.color; ctx.fillText(t.text, t.x, t.y);
+  }
+  ctx.globalAlpha = 1;
+  if (s.flash > 0) { ctx.fillStyle = `rgba(255,60,80,${s.flash * 0.6})`; ctx.fillRect(0, 0, W, H); }
+
+  const top = G.safe.top + 36;
+  ctx.textAlign = 'left'; ctx.fillStyle = '#fff'; ctx.font = '800 28px -apple-system, sans-serif';
+  ctx.fillText(`${s.score}`, 16, top);
+  ctx.font = '600 14px -apple-system, sans-serif'; ctx.fillStyle = 'rgba(255,255,255,.8)';
+  ctx.fillText(`${Math.floor(s.dist / 10)}m  ·  🪙 ${s.coins}  ·  레벨 ${s.level}`, 16, top + 26);
+  // 하단 안내
+  if (s.time < 3) {
+    ctx.textAlign = 'center'; ctx.font = '700 18px -apple-system, sans-serif'; ctx.fillStyle = 'rgba(255,255,255,.8)';
+    ctx.fillText('👆 아무 곳이나 탭해서 점프!', W / 2, gy + 70);
+  }
+}
+ready = true;
+drawIdle();
+</script>
+</body>
+</html>

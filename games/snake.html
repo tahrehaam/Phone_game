@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#1b1f3b">
+<link rel="manifest" href="../manifest.json">
+<link rel="apple-touch-icon" href="../icon-180.png">
+<title>뱀 키우기</title>
+<link rel="stylesheet" href="../common.css">
+</head>
+<body>
+<canvas id="game"></canvas>
+<script src="../common.js"></script>
+<script>
+// ===== 뱀 키우기 =====
+const COLS = 15;              // 가로/세로 칸 수
+const START_STEP = 0.17;      // 처음 이동 간격(초) - 작을수록 빠름
+const MIN_STEP = 0.07;        // 가장 빠를 때
+const APPLES_PER_LEVEL = 5;   // 사과 몇 개마다 빨라지는지
+
+const canvas = document.getElementById('game');
+let state = null, ready = false;
+const view = G.fitCanvas(canvas, () => { if (ready) (state ? draw() : drawIdle()); });
+const ctx = view.ctx;
+
+const game = G.shell({
+  id: 'snake',
+  legend: [['👆', '화면을 밀어서(스와이프) 방향 바꾸기'], ['🍎', '사과 +1점, 몸이 길어져요'], ['🍏', '황금 사과 +5점 (잠깐만 나와요)'], ['💥', '벽이나 내 몸에 부딪히면 끝!']],
+  tip: '사과를 먹을수록 점점 빨라져요',
+  onStart: newGame,
+});
+
+function board() {
+  const { W, H } = view;
+  const topArea = G.safe.top + 120, bottomArea = G.safe.bottom + 30;
+  const size = Math.floor(Math.min(W - 24, H - topArea - bottomArea) / COLS) * COLS;
+  return { size, cell: size / COLS, x: Math.round((W - size) / 2), y: Math.round(topArea + (H - topArea - bottomArea - size) / 2) };
+}
+
+function newGame() {
+  const mid = Math.floor(COLS / 2);
+  state = {
+    snake: [{ x: mid - 1, y: mid }, { x: mid - 2, y: mid }, { x: mid - 3, y: mid }],
+    dir: { x: 1, y: 0 }, queue: [], grow: 0,
+    apple: null, gold: null, goldTimer: 0, nextGold: 6 + Math.floor(Math.random() * 4),
+    score: 0, eaten: 0, level: 1, stepTime: START_STEP, acc: 0, time: 0,
+    particles: [], texts: [], dead: false, flash: 0, waiting: true, // 첫 스와이프 전까지 대기
+  };
+  state.apple = emptyCell();
+  game.loop(dt => { update(dt); draw(); });
+}
+
+function emptyCell() {
+  for (let tries = 0; tries < 500; tries++) {
+    const c = { x: Math.floor(Math.random() * COLS), y: Math.floor(Math.random() * COLS) };
+    if (!state.snake.some(p => p.x === c.x && p.y === c.y) &&
+        !(state.apple && state.apple.x === c.x && state.apple.y === c.y) &&
+        !(state.gold && state.gold.x === c.x && state.gold.y === c.y)) return c;
+  }
+  return { x: 0, y: 0 };
+}
+
+// ----- 조작: 스와이프 (키보드 화살표도 가능) -----
+function turn(dx, dy) {
+  if (!state || state.dead) return;
+  if (state.waiting) { if (dx === -1) return; state.waiting = false; state.acc = 0; } // 첫 스와이프로 출발 (몸 쪽인 왼쪽은 무시)
+  const last = state.queue.length ? state.queue[state.queue.length - 1] : state.dir;
+  if ((dx === -last.x && dy === -last.y) || (dx === last.x && dy === last.y)) return; // 반대·같은 방향 무시
+  if (state.queue.length < 2) state.queue.push({ x: dx, y: dy });
+}
+let sx = 0, sy = 0;
+canvas.addEventListener('touchstart', e => { e.preventDefault(); sx = e.touches[0].clientX; sy = e.touches[0].clientY; }, { passive: false });
+canvas.addEventListener('touchmove', e => {
+  e.preventDefault();
+  const x = e.touches[0].clientX, y = e.touches[0].clientY, dx = x - sx, dy = y - sy;
+  if (Math.hypot(dx, dy) < 22) return;
+  if (Math.abs(dx) > Math.abs(dy)) turn(Math.sign(dx), 0); else turn(0, Math.sign(dy));
+  sx = x; sy = y;
+}, { passive: false });
+document.addEventListener('keydown', e => {
+  const m = { ArrowUp: [0, -1], ArrowDown: [0, 1], ArrowLeft: [-1, 0], ArrowRight: [1, 0] }[e.key];
+  if (m) { e.preventDefault(); turn(...m); }
+});
+
+function update(dt) {
+  const s = state;
+  s.time += dt;
+  s.flash = Math.max(0, s.flash - dt);
+  for (const p of s.particles) { p.x += p.vx * dt; p.y += p.vy * dt; p.life -= dt; }
+  s.particles = s.particles.filter(p => p.life > 0);
+  for (const t of s.texts) { t.y -= 40 * dt; t.life -= dt; }
+  s.texts = s.texts.filter(t => t.life > 0);
+  if (s.gold) { s.goldTimer -= dt; if (s.goldTimer <= 0) s.gold = null; }
+  if (s.dead || s.waiting) return;
+
+  s.acc += dt;
+  while (s.acc >= s.stepTime && !s.dead) { s.acc -= s.stepTime; step(); }
+}
+
+function step() {
+  const s = state;
+  if (s.queue.length) s.dir = s.queue.shift();
+  const head = { x: s.snake[0].x + s.dir.x, y: s.snake[0].y + s.dir.y };
+  const willGrow = s.grow > 0;
+  const body = willGrow ? s.snake : s.snake.slice(0, -1); // 꼬리는 움직이니까 제외
+  if (head.x < 0 || head.y < 0 || head.x >= COLS || head.y >= COLS || body.some(p => p.x === head.x && p.y === head.y)) {
+    return die();
+  }
+  s.snake.unshift(head);
+  if (willGrow) s.grow--; else s.snake.pop();
+
+  const b = board();
+  const px = b.x + (head.x + 0.5) * b.cell, py = b.y + (head.y + 0.5) * b.cell;
+  if (s.apple && head.x === s.apple.x && head.y === s.apple.y) {
+    eat(1, px, py, '#ff4d5e'); s.apple = emptyCell();
+    if (s.eaten >= s.nextGold && !s.gold) { s.gold = emptyCell(); s.goldTimer = 5; s.nextGold = s.eaten + 6 + Math.floor(Math.random() * 5); }
+  } else if (s.gold && head.x === s.gold.x && head.y === s.gold.y) {
+    eat(5, px, py, '#ffd447'); s.gold = null; G.sfx.great();
+  }
+}
+
+function eat(pts, x, y, color) {
+  const s = state;
+  s.score += pts; s.eaten++; s.grow += pts > 1 ? 3 : 1;
+  if (pts === 1) G.sfx.good(s.eaten);
+  s.texts.push({ x, y: y - 10, text: `+${pts}`, color, life: 0.8 });
+  for (let i = 0; i < 12; i++) {
+    const a = Math.random() * Math.PI * 2, sp = 40 + Math.random() * 120;
+    s.particles.push({ x, y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp, life: 0.5, color });
+  }
+  const lv = 1 + Math.floor(s.eaten / APPLES_PER_LEVEL);
+  if (lv > s.level) { s.level = lv; s.stepTime = Math.max(MIN_STEP, START_STEP - (lv - 1) * 0.012); G.sfx.level(); }
+}
+
+function die() {
+  const s = state;
+  s.dead = true; s.flash = 0.4;
+  G.sfx.bad(); G.vibrate(200);
+  setTimeout(() => { if (state === s) game.over(s.score, s.level, `레벨 ${s.level} · 몸 길이 ${s.snake.length}칸`); }, 700);
+}
+
+// ----- 그리기 -----
+function drawBoard(b) {
+  ctx.fillStyle = '#16341f'; ctx.beginPath(); ctx.roundRect(b.x - 6, b.y - 6, b.size + 12, b.size + 12, 14); ctx.fill();
+  for (let y = 0; y < COLS; y++) for (let x = 0; x < COLS; x++) {
+    ctx.fillStyle = (x + y) % 2 ? '#2c6b3c' : '#337a45';
+    ctx.fillRect(b.x + x * b.cell, b.y + y * b.cell, b.cell, b.cell);
+  }
+}
+function drawFruit(b, c, emoji, t, glow) {
+  const cx = b.x + (c.x + 0.5) * b.cell, cy = b.y + (c.y + 0.5) * b.cell;
+  const sc = 1 + Math.sin(t * 6) * 0.06;
+  ctx.save(); ctx.translate(cx, cy); ctx.scale(sc, sc);
+  if (glow) { ctx.shadowColor = '#ffd447'; ctx.shadowBlur = 16; }
+  ctx.font = `${b.cell * 0.85}px sans-serif`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText(emoji, 0, 1);
+  ctx.restore();
+}
+
+function drawIdle() {
+  const { W, H } = view;
+  ctx.fillStyle = '#1b1f3b'; ctx.fillRect(0, 0, W, H);
+  drawBoard(board());
+}
+
+function draw() {
+  const s = state, { W, H } = view, b = board();
+  ctx.fillStyle = '#1b1f3b'; ctx.fillRect(0, 0, W, H);
+  drawBoard(b);
+  if (s.apple) drawFruit(b, s.apple, '🍎', s.time, false);
+  if (s.gold && (s.goldTimer > 1.5 || Math.floor(s.time * 8) % 2)) drawFruit(b, s.gold, '🍏', s.time, true);
+
+  // 뱀 몸통 (꼬리 → 머리 순서로, 색이 점점 진해짐)
+  const n = s.snake.length;
+  for (let i = n - 1; i >= 0; i--) {
+    const p = s.snake[i];
+    const pad = i === 0 ? 1 : 2 + (i / n) * 3;
+    ctx.fillStyle = s.dead ? '#8a8a8a' : `hsl(${140 - i * 2}, 70%, ${55 - (i / n) * 15}%)`;
+    ctx.beginPath();
+    ctx.roundRect(b.x + p.x * b.cell + pad, b.y + p.y * b.cell + pad, b.cell - pad * 2, b.cell - pad * 2, b.cell * 0.35);
+    ctx.fill();
+  }
+  // 눈
+  const h = s.snake[0], cx = b.x + (h.x + 0.5) * b.cell, cy = b.y + (h.y + 0.5) * b.cell;
+  const ex = -s.dir.y, ey = s.dir.x; // 진행 방향의 옆
+  for (const k of [-1, 1]) {
+    const x = cx + ex * k * b.cell * 0.2 + s.dir.x * b.cell * 0.15, y = cy + ey * k * b.cell * 0.2 + s.dir.y * b.cell * 0.15;
+    ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(x, y, b.cell * 0.13, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#111'; ctx.beginPath(); ctx.arc(x + s.dir.x * 1.5, y + s.dir.y * 1.5, b.cell * 0.07, 0, Math.PI * 2); ctx.fill();
+  }
+
+  for (const p of s.particles) { ctx.globalAlpha = p.life * 2; ctx.fillStyle = p.color; ctx.fillRect(p.x - 2, p.y - 2, 4, 4); }
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  for (const t of s.texts) {
+    ctx.globalAlpha = Math.min(1, t.life * 2); ctx.font = '800 20px -apple-system, sans-serif';
+    ctx.fillStyle = t.color; ctx.fillText(t.text, t.x, t.y);
+  }
+  ctx.globalAlpha = 1;
+  if (s.flash > 0) { ctx.fillStyle = `rgba(255,60,80,${s.flash * 0.6})`; ctx.fillRect(0, 0, W, H); }
+
+  // 점수판
+  const top = G.safe.top + 36;
+  ctx.textAlign = 'left'; ctx.fillStyle = '#fff'; ctx.font = '800 28px -apple-system, sans-serif';
+  ctx.fillText(`${s.score}`, 16, top);
+  ctx.font = '600 14px -apple-system, sans-serif'; ctx.fillStyle = 'rgba(255,255,255,.7)';
+  ctx.fillText(`레벨 ${s.level}  ·  길이 ${s.snake.length}`, 16, top + 26);
+  if (s.waiting) {
+    ctx.textAlign = 'center'; ctx.font = '800 20px -apple-system, sans-serif'; ctx.fillStyle = '#fff';
+    ctx.fillText('👆 화면을 밀어서 출발!', W / 2, b.y + b.size + 22 > H - 10 ? b.y - 16 : b.y + b.size + 22);
+  }
+}
+
+ready = true;
+drawIdle();
+</script>
+</body>
+</html>

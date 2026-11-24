@@ -3,7 +3,11 @@
 아이폰에서 플레이하는 웹 게임 프로젝트입니다. 사용자는 주로 휴대폰의 Claude 앱(Code 탭)으로 작업합니다.
 
 ## 구조
-- `index.html` — 게임 전체(HTML + CSS + JavaScript가 한 파일에 있음). 빌드 도구나 npm 패키지 없이 그대로 동작해야 합니다.
+- `index.html` — 로비(닉네임 등록, 게임 선택, 게임별 전체 랭킹)
+- `games/<id>.html` — 게임 하나당 파일 하나 (star, snake, jump, mole, brick, stack)
+- `common.js` / `common.css` — 모든 게임이 같이 쓰는 기능: 게임 목록(`GAMES`), 닉네임(localStorage `name`), 효과음, Firebase 랭킹, 시작/일시정지/게임오버/랭킹 화면(`G.shell`)
+- `firestore.rules` — Firebase 보안 규칙. 게임을 추가하면 `GAMES`의 `col`과 이 파일의 `rankingCols()`에 같이 추가하고, 사용자에게 Firebase 콘솔에서 규칙을 다시 게시하도록 안내합니다.
+- 빌드 도구나 npm 패키지 없이 그대로 동작해야 합니다.
 - `manifest.json`, `icon-180.png`, `icon-512.png` — 아이폰 "홈 화면에 추가" 시 앱처럼 보이게 하는 설정
 - GitHub Pages로 `main` 브랜치 루트를 그대로 배포합니다.
 

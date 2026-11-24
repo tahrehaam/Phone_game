@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#1b1f3b">
+<link rel="manifest" href="../manifest.json">
+<link rel="apple-touch-icon" href="../icon-180.png">
+<title>탑 쌓기</title>
+<link rel="stylesheet" href="../common.css">
+</head>
+<body>
+<canvas id="game"></canvas>
+<script src="../common.js"></script>
+<script>
+// ===== 탑 쌓기 =====
+const BLOCK_H = 30;        // 블록 높이
+const START_SPEED = 170;   // 블록이 좌우로 움직이는 속도
+const SPEEDUP = 9;         // 한 층마다 빨라지는 정도
+const PERFECT = 6;         // 이 픽셀 이내로 맞추면 "완벽!"
+
+let state = null, ready = false;
+const canvas = document.getElementById('game');
+const view = G.fitCanvas(canvas, () => { if (ready) (state ? draw() : drawIdle()); });
+const ctx = view.ctx;
+
+const game = G.shell({
+  id: 'stack',
+  legend: [['👆', '탭하면 움직이는 블록이 떨어져요'], ['✂️', '삐져나온 부분은 잘려 나가요'], ['✨', '딱 맞추면 완벽! (+보너스)'], ['🔥', '완벽 3번 연속이면 블록이 넓어져요']],
+  tip: '블록이 아래층에 하나도 안 걸치면 끝!',
+  onStart: newGame,
+});
+
+const hue = i => (200 + i * 9) % 360;
+function baseY() { return view.H - G.safe.bottom - 120; }
+
+function newGame() {
+  const W = view.W, bw = Math.min(220, W * 0.6);
+  state = {
+    tower: [{ x: (W - bw) / 2, w: bw, i: 0 }],
+    moving: null, falling: [], score: 0, height: 0, perfect: 0, perfects: 0,
+    cam: 0, camTarget: 0, texts: [], flash: 0, time: 0, over: false, ripple: null,
+  };
+  nextBlock();
+  game.loop(dt => { update(dt); draw(); });
+}
+
+function nextBlock() {
+  const s = state, top = s.tower[s.tower.length - 1];
+  const fromLeft = s.tower.length % 2 === 0;
+  s.moving = { x: fromLeft ? -top.w : view.W, w: top.w, i: s.tower.length,
+    dir: fromLeft ? 1 : -1, speed: START_SPEED + s.height * SPEEDUP };
+}
+
+function drop() {
+  const s = state;
+  if (!s || s.over || !game.running || game.paused || !s.moving) return;
+  const m = s.moving, top = s.tower[s.tower.length - 1];
+  const y = baseY() - m.i * BLOCK_H;
+  let diff = m.x - top.x;
+  if (Math.abs(diff) <= PERFECT) {
+    // 완벽!
+    m.x = top.x; diff = 0;
+    s.perfect++; s.perfects++;
+    let w = top.w;
+    if (s.perfect >= 3) { w = Math.min(view.W * 0.7, w + 12); m.x = top.x - 6; }
+    s.tower.push({ x: m.x, w, i: m.i });
+    s.score += 2;
+    s.ripple = { x: m.x, w, y, life: 0.5 };
+    s.texts.push({ x: view.W / 2, y: y - 40, text: s.perfect >= 3 ? `완벽! x${s.perfect} 🔥` : '완벽!', color: '#ffd447', life: 0.9 });
+    G.notes([660 + s.perfect * 60, 990 + s.perfect * 60], 60);
+  } else {
+    const left = Math.max(m.x, top.x), right = Math.min(m.x + m.w, top.x + top.w);
+    const w = right - left;
+    if (w <= 0) { // 하나도 안 걸침
+      s.falling.push({ x: m.x, y, w: m.w, i: m.i, vy: 0, rot: 0, vr: m.dir * 2 });
+      s.moving = null;
+      return end();
+    }
+    // 잘려 나가는 부분
+    const cutX = m.x < top.x ? m.x : right, cutW = m.w - w;
+    s.falling.push({ x: cutX, y, w: cutW, i: m.i, vy: 0, rot: 0, vr: (m.x < top.x ? -1 : 1) * 2 });
+    s.tower.push({ x: left, w, i: m.i });
+    s.perfect = 0; s.score += 1;
+    G.beep(420 + Math.min(s.height, 40) * 8, 0.08, 'triangle');
+  }
+  s.height++;
+  s.camTarget = Math.max(0, (s.height - 6) * BLOCK_H);
+  nextBlock();
+}
+canvas.addEventListener('touchstart', e => { e.preventDefault(); drop(); }, { passive: false });
+canvas.addEventListener('mousedown', drop);
+document.addEventListener('keydown', e => { if (e.key === ' ') { e.preventDefault(); drop(); } });
+
+function end() {
+  const s = state;
+  s.over = true; s.flash = 0.35; G.sfx.bad(); G.vibrate(200);
+  setTimeout(() => { if (state === s) game.over(s.score, 1 + Math.floor(s.height / 10), `높이 ${s.height}층 · 완벽 ${s.perfects}번`); }, 900);
+}
+
+function update(dt) {
+  const s = state;
+  s.time += dt;
+  s.flash = Math.max(0, s.flash - dt);
+  s.cam += (s.camTarget - s.cam) * Math.min(1, dt * 6);
+  for (const f of s.falling) { f.vy += 1500 * dt; f.y += f.vy * dt; f.rot += f.vr * dt; }
+  s.falling = s.falling.filter(f => f.y + s.cam < view.H + 200);
+  for (const t of s.texts) { t.y -= 40 * dt; t.life -= dt; }
+  s.texts = s.texts.filter(t => t.life > 0);
+  if (s.ripple) { s.ripple.life -= dt; if (s.ripple.life <= 0) s.ripple = null; }
+  const m = s.moving;
+  if (m && !s.over) {
+    m.x += m.dir * m.speed * dt;
+    if (m.x + m.w > view.W + 20 && m.dir > 0) m.dir = -1;
+    if (m.x < -20 && m.dir < 0) m.dir = 1;
+  }
+}
+
+// ----- 그리기 -----
+function drawBg(height) {
+  const { W, H } = view;
+  const g = ctx.createLinearGradient(0, 0, 0, H);
+  const h = hue(height);
+  g.addColorStop(0, `hsl(${h},40%,14%)`); g.addColorStop(1, `hsl(${(h + 40) % 360},45%,28%)`);
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+}
+function drawBlock(x, y, w, i, alpha = 1) {
+  const h = hue(i);
+  ctx.globalAlpha = alpha;
+  ctx.fillStyle = `hsl(${h},70%,60%)`; ctx.fillRect(x, y, w, BLOCK_H);
+  ctx.fillStyle = `hsl(${h},70%,72%)`; ctx.fillRect(x, y, w, 5);
+  ctx.fillStyle = `hsl(${h},60%,45%)`; ctx.fillRect(x, y + BLOCK_H - 4, w, 4);
+  ctx.globalAlpha = 1;
+}
+function drawIdle() {
+  const { W } = view, bw = Math.min(220, W * 0.6);
+  drawBg(0);
+  for (let i = 0; i < 5; i++) drawBlock((W - bw) / 2 + Math.sin(i) * 10, baseY() - i * BLOCK_H, bw - i * 8, i);
+}
+
+function draw() {
+  const s = state, { W, H } = view;
+  drawBg(s.height);
+  ctx.save(); ctx.translate(0, s.cam);
+  // 받침대
+  ctx.fillStyle = 'rgba(0,0,0,.3)'; ctx.fillRect(0, baseY() + BLOCK_H, W, 400);
+  for (const b of s.tower) drawBlock(b.x, baseY() - b.i * BLOCK_H, b.w, b.i);
+  if (s.ripple) {
+    const r = s.ripple, k = 1 - r.life / 0.5;
+    ctx.strokeStyle = `rgba(255,255,255,${r.life * 2})`; ctx.lineWidth = 3;
+    ctx.strokeRect(r.x - k * 14, r.y - k * 10, r.w + k * 28, BLOCK_H + k * 20);
+  }
+  if (s.moving && !s.over) drawBlock(s.moving.x, baseY() - s.moving.i * BLOCK_H, s.moving.w, s.moving.i);
+  for (const f of s.falling) {
+    ctx.save(); ctx.translate(f.x + f.w / 2, f.y + BLOCK_H / 2); ctx.rotate(f.rot);
+    drawBlock(-f.w / 2, -BLOCK_H / 2, f.w, f.i, 0.9); ctx.restore();
+  }
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  for (const t of s.texts) {
+    ctx.globalAlpha = Math.min(1, t.life * 2); ctx.font = '900 26px -apple-system, sans-serif';
+    ctx.lineWidth = 4; ctx.strokeStyle = 'rgba(0,0,0,.35)'; ctx.strokeText(t.text, t.x, t.y);
+    ctx.fillStyle = t.color; ctx.fillText(t.text, t.x, t.y);
+  }
+  ctx.globalAlpha = 1;
+  ctx.restore();
+  if (s.flash > 0) { ctx.fillStyle = `rgba(255,60,80,${s.flash * 0.6})`; ctx.fillRect(0, 0, W, H); }
+
+  const top = G.safe.top + 36;
+  ctx.textAlign = 'left'; ctx.textBaseline = 'middle'; ctx.fillStyle = '#fff'; ctx.font = '800 28px -apple-system, sans-serif';
+  ctx.fillText(`${s.score}`, 16, top);
+  ctx.font = '600 14px -apple-system, sans-serif'; ctx.fillStyle = 'rgba(255,255,255,.75)';
+  ctx.fillText(`${s.height}층` + (s.perfect >= 2 ? `  ·  완벽 연속 ${s.perfect}` : ''), 16, top + 26);
+  if (s.height === 0 && !s.over) {
+    ctx.textAlign = 'center'; ctx.font = '700 18px -apple-system, sans-serif'; ctx.fillStyle = 'rgba(255,255,255,.85)';
+    ctx.fillText('👆 블록이 겹칠 때 탭!', W / 2, baseY() + BLOCK_H + 50);
+  }
+}
+
+ready = true;
+drawIdle();
+</script>
+</body>
+</html>

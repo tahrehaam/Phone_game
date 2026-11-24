@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#1b1f3b">
+<link rel="manifest" href="../manifest.json">
+<link rel="apple-touch-icon" href="../icon-180.png">
+<title>두더지 잡기</title>
+<link rel="stylesheet" href="../common.css">
+</head>
+<body>
+<canvas id="game"></canvas>
+<script src="../common.js"></script>
+<script>
+// ===== 두더지 잡기 =====
+const TIME_LIMIT = 30;   // 제한 시간(초)
+const ROWS = 4, COLS = 3;
+
+let state = null, ready = false;
+const canvas = document.getElementById('game');
+const view = G.fitCanvas(canvas, () => { if (ready) (state ? draw() : drawIdle()); });
+const ctx = view.ctx;
+
+const game = G.shell({
+  id: 'mole',
+  legend: [['🐹', '두더지 +1점'], ['👑', '왕 두더지 +5점 (빨리 숨어요)'], ['⏰', '시계: 시간 +3초'], ['💣', '폭탄을 치면 -5점!']],
+  tip: `${TIME_LIMIT}초 동안 최대한 많이! 연속으로 맞히면 콤보 보너스`,
+  onStart: newGame,
+});
+
+function layout() {
+  const { W, H } = view;
+  const top = G.safe.top + 150, bottom = G.safe.bottom + 40;
+  const cw = Math.min((W - 30) / COLS, 130), ch = Math.min((H - top - bottom) / ROWS, 150);
+  const gx = (W - cw * COLS) / 2, gy = top + (H - top - bottom - ch * ROWS) / 2;
+  const holes = [];
+  for (let r = 0; r < ROWS; r++) for (let c = 0; c < COLS; c++) {
+    holes.push({ x: gx + cw * (c + 0.5), y: gy + ch * (r + 0.72), rw: cw * 0.4, rh: cw * 0.14, size: Math.min(cw, ch) * 0.55 });
+  }
+  return holes;
+}
+
+function newGame() {
+  state = {
+    time: TIME_LIMIT, elapsed: 0, score: 0, combo: 0, maxCombo: 0, hits: 0,
+    moles: [], spawn: 0.4, texts: [], parts: [], shake: 0, over: false,
+  };
+  game.loop(dt => { update(dt); draw(); });
+}
+
+function pick() {
+  const r = Math.random();
+  if (r < 0.08) return 'king';
+  if (r < 0.13) return 'clock';
+  if (r < 0.13 + Math.min(0.25, 0.08 + state.elapsed * 0.006)) return 'bomb'; // 갈수록 폭탄이 많아져요
+  return 'mole';
+}
+
+function spawnMole() {
+  const s = state, holes = layout();
+  const free = holes.map((h, i) => i).filter(i => !s.moles.some(m => m.hole === i));
+  if (!free.length) return;
+  const hole = free[Math.floor(Math.random() * free.length)];
+  const kind = pick();
+  const speedUp = Math.max(0.45, 1 - s.elapsed * 0.018);
+  const stay = (kind === 'king' ? 0.55 : kind === 'bomb' ? 1.3 : 0.95) * speedUp;
+  s.moles.push({ hole, kind, t: 0, stay, up: 0, hit: false });
+}
+
+function update(dt) {
+  const s = state;
+  s.shake = Math.max(0, s.shake - dt);
+  for (const t of s.texts) { t.y -= 50 * dt; t.life -= dt; }
+  s.texts = s.texts.filter(t => t.life > 0);
+  for (const p of s.parts) { p.x += p.vx * dt; p.y += p.vy * dt; p.vy += 600 * dt; p.life -= dt; }
+  s.parts = s.parts.filter(p => p.life > 0);
+  if (s.over) return;
+
+  s.time -= dt; s.elapsed += dt;
+  if (s.time <= 0) {
+    s.time = 0; s.over = true;
+    setTimeout(() => { if (state === s) game.over(s.score, 1 + Math.floor(s.hits / 10), `맞힌 두더지 ${s.hits}마리 · 최대 콤보 ${s.maxCombo}`); }, 400);
+    return;
+  }
+  s.spawn -= dt;
+  if (s.spawn <= 0) {
+    spawnMole();
+    if (s.elapsed > 12 && Math.random() < 0.35) spawnMole(); // 후반엔 두 마리씩
+    s.spawn = Math.max(0.35, 0.8 - s.elapsed * 0.015);
+  }
+  for (const m of s.moles) {
+    m.t += dt;
+    const rise = 0.12;
+    if (m.hit) m.up = Math.max(0, m.up - dt * 6);
+    else if (m.t < rise) m.up = m.t / rise;
+    else if (m.t < rise + m.stay) m.up = 1;
+    else m.up = Math.max(0, 1 - (m.t - rise - m.stay) / rise);
+    if ((m.hit && m.up <= 0) || (!m.hit && m.t > rise * 2 + m.stay)) {
+      m.gone = true;
+      if (!m.hit && (m.kind === 'mole' || m.kind === 'king')) s.combo = 0; // 놓치면 콤보 끊김
+    }
+  }
+  s.moles = s.moles.filter(m => !m.gone);
+}
+
+function tap(x, y) {
+  const s = state;
+  if (!s || s.over || !game.running || game.paused) return;
+  const holes = layout();
+  let target = null;
+  for (const m of s.moles) {
+    if (m.hit || m.up < 0.3) continue;
+    const h = holes[m.hole];
+    if (Math.abs(x - h.x) < h.size * 0.75 && y > h.y - h.size * 1.4 && y < h.y + h.rh * 2) { target = m; break; }
+  }
+  if (!target) { s.combo = 0; G.beep(200, 0.05, 'sine', 0.08); return; }
+  target.hit = true;
+  const h = holes[target.hole];
+  const burst = (color, n) => { for (let i = 0; i < n; i++) { const a = Math.random() * Math.PI * 2, sp = 80 + Math.random() * 180; s.parts.push({ x: h.x, y: h.y - h.size * 0.6, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp - 120, life: 0.6, color }); } };
+  if (target.kind === 'bomb') {
+    s.score = Math.max(0, s.score - 5); s.combo = 0; s.shake = 0.3;
+    G.sfx.bad(); G.vibrate(150); burst('#ff4d5e', 20);
+    s.texts.push({ x: h.x, y: h.y - h.size, text: '-5', color: '#ff4d5e', life: 0.9 });
+  } else if (target.kind === 'clock') {
+    s.time += 3; G.sfx.power(); burst('#5ad1ff', 14);
+    s.texts.push({ x: h.x, y: h.y - h.size, text: '+3초', color: '#5ad1ff', life: 0.9 });
+  } else {
+    s.combo++; s.hits++; s.maxCombo = Math.max(s.maxCombo, s.combo);
+    const bonus = Math.floor(s.combo / 5);          // 5콤보마다 +1점씩 추가
+    const pts = (target.kind === 'king' ? 5 : 1) + bonus;
+    s.score += pts;
+    if (target.kind === 'king') G.sfx.great(); else G.sfx.good(s.combo);
+    burst(target.kind === 'king' ? '#ffd447' : '#c08457', 12);
+    s.texts.push({ x: h.x, y: h.y - h.size, text: `+${pts}`, color: target.kind === 'king' ? '#ffd447' : '#fff', life: 0.8 });
+    G.vibrate(15);
+  }
+}
+canvas.addEventListener('touchstart', e => { e.preventDefault(); for (const t of e.changedTouches) tap(t.clientX, t.clientY); }, { passive: false });
+canvas.addEventListener('mousedown', e => tap(e.clientX, e.clientY));
+
+// ----- 그리기 -----
+const ICON = { mole: '🐹', king: '🐹', clock: '⏰', bomb: '💣' };
+function drawField(holes) {
+  const { W, H } = view;
+  const g = ctx.createLinearGradient(0, 0, 0, H);
+  g.addColorStop(0, '#3d7a3a'); g.addColorStop(1, '#2a5a2a');
+  ctx.fillStyle = g; ctx.fillRect(-20, -20, W + 40, H + 40);
+  ctx.fillStyle = 'rgba(255,255,255,.04)';
+  for (let i = 0; i < 40; i++) ctx.fillRect((i * 97) % W, (i * 211) % H, 3, 8);
+  for (const h of holes) {
+    ctx.fillStyle = '#1e1208'; ctx.beginPath(); ctx.ellipse(h.x, h.y, h.rw, h.rh, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = '#6b4a2a'; ctx.lineWidth = 5; ctx.stroke();
+  }
+}
+
+function drawIdle() { drawField(layout()); }
+
+function draw() {
+  const s = state, { W, H } = view, holes = layout();
+  ctx.save();
+  if (s.shake > 0) ctx.translate((Math.random() - 0.5) * 16 * s.shake / 0.3, (Math.random() - 0.5) * 16 * s.shake / 0.3);
+  drawField(holes);
+
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  for (const m of s.moles) {
+    const h = holes[m.hole];
+    // 구멍 위쪽만 보이도록 잘라내기 (땅에서 올라오는 느낌)
+    ctx.save();
+    ctx.beginPath(); ctx.rect(h.x - h.size, h.y - h.size * 2, h.size * 2, h.size * 2); ctx.ellipse(h.x, h.y, h.rw, h.rh, 0, 0, Math.PI); ctx.clip();
+    const y = h.y + h.size * 0.65 - m.up * h.size * 1.05;
+    ctx.font = `${h.size}px sans-serif`;
+    if (m.hit && m.kind !== 'clock') { ctx.globalAlpha = 0.6; }
+    ctx.fillText(m.hit && m.kind !== 'bomb' && m.kind !== 'clock' ? '😵' : ICON[m.kind], h.x, y);
+    if (m.kind === 'king' && !m.hit) { ctx.font = `${h.size * 0.5}px sans-serif`; ctx.fillText('👑', h.x, y - h.size * 0.55); }
+    ctx.restore();
+    // 구멍 앞쪽 테두리
+    ctx.strokeStyle = '#6b4a2a'; ctx.lineWidth = 5;
+    ctx.beginPath(); ctx.ellipse(h.x, h.y, h.rw, h.rh, 0, 0, Math.PI); ctx.stroke();
+  }
+  for (const p of s.parts) { ctx.globalAlpha = Math.max(0, p.life * 2); ctx.fillStyle = p.color; ctx.fillRect(p.x - 3, p.y - 3, 6, 6); }
+  for (const t of s.texts) {
+    ctx.globalAlpha = Math.min(1, t.life * 2); ctx.font = '900 26px -apple-system, sans-serif';
+    ctx.lineWidth = 4; ctx.strokeStyle = 'rgba(0,0,0,.4)'; ctx.strokeText(t.text, t.x, t.y);
+    ctx.fillStyle = t.color; ctx.fillText(t.text, t.x, t.y);
+  }
+  ctx.globalAlpha = 1;
+  ctx.restore();
+
+  // 점수 & 남은 시간
+  const top = G.safe.top + 36;
+  ctx.textAlign = 'left'; ctx.fillStyle = '#fff'; ctx.font = '800 28px -apple-system, sans-serif';
+  ctx.fillText(`${s.score}`, 16, top);
+  ctx.font = '600 14px -apple-system, sans-serif'; ctx.fillStyle = 'rgba(255,255,255,.8)';
+  ctx.fillText(s.combo >= 3 ? `콤보 ${s.combo} 🔥` : '두더지를 탭하세요', 16, top + 26);
+  const barW = W - 32, frac = Math.min(1, s.time / TIME_LIMIT);
+  const by = G.safe.top + 120;
+  ctx.fillStyle = 'rgba(0,0,0,.3)'; ctx.beginPath(); ctx.roundRect(16, by, barW, 12, 6); ctx.fill();
+  ctx.fillStyle = s.time < 5 ? '#ff4d5e' : '#ffd447';
+  ctx.beginPath(); ctx.roundRect(16, by, Math.max(12, barW * frac), 12, 6); ctx.fill();
+  ctx.textAlign = 'center'; ctx.font = '800 20px -apple-system, sans-serif'; ctx.fillStyle = s.time < 5 ? '#ff8a95' : '#fff';
+  ctx.fillText(`⏱ ${Math.ceil(s.time)}초`, W / 2, top);
+}
+
+ready = true;
+drawIdle();
+</script>
+</body>
+</html>
