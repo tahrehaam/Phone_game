@@ -65,10 +65,10 @@
 
 <div id="nameMenu" class="overlay hidden">
   <h1>🎮 미니 게임</h1>
-  <h2>닉네임을 정해 주세요</h2>
+  <h2>이름을 적어 주세요</h2>
   <p>랭킹에 이 이름으로 기록돼요</p>
   <div id="nameBox">
-    <input id="nameInput" type="text" maxlength="10" placeholder="닉네임 (최대 10글자)" autocomplete="off" enterkeyhint="done">
+    <input id="nameInput" type="text" maxlength="10" placeholder="이름 (최대 10글자)" autocomplete="off" enterkeyhint="done">
     <p id="nameMsg"></p>
     <button class="btn" id="nameOkBtn">확인</button>
   </div>
@@ -120,7 +120,7 @@ function openNameMenu() {
 }
 $('nameOkBtn').onclick = () => {
   const n = $('nameInput').value.trim().slice(0, 10);
-  if (!n) { $('nameMsg').textContent = '닉네임을 입력해 주세요'; $('nameInput').focus(); return; }
+  if (!n) { $('nameMsg').textContent = '이름을 입력해 주세요'; $('nameInput').focus(); return; }
   name = n; G.setName(n); $('nameInput').blur(); G.sfx.tap();
   showLobby();
 };

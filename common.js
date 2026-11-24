@@ -1,5 +1,5 @@
 // ===== 모든 게임이 같이 쓰는 기능 =====
-// 닉네임, 효과음, 온라인 랭킹(Firebase), 시작/일시정지/게임오버/랭킹 화면
+// 이름, 효과음, 온라인 랭킹(Firebase), 시작/일시정지/게임오버/랭킹 화면
 
 // 게임 목록 (새 게임을 추가하면 여기에도 한 줄 추가)
 // col: Firebase에 점수를 저장하는 곳 이름 (firestore.rules에도 같은 이름이 있어야 해요)
@@ -19,7 +19,7 @@ const G = (() => {
   function load(key, def) { try { const v = localStorage.getItem(key); return v === null ? def : JSON.parse(v); } catch (e) { return def; } }
   function save(key, v) { try { localStorage.setItem(key, JSON.stringify(v)); } catch (e) {} }
 
-  // ----- 닉네임 (기존 별 잡기에서 쓰던 'name' 그대로 사용) -----
+  // ----- 이름 (기존 별 잡기에서 쓰던 'name' 그대로 사용) -----
   function getName() { return String(load('name', '') || '').trim().slice(0, 10); }
   function setName(n) { save('name', n); }
 
@@ -157,7 +157,7 @@ const G = (() => {
   function shell(cfg) {
     const info = GAMES.find(g => g.id === cfg.id);
     const name = getName();
-    if (!name) { location.replace('../index.html'); return null; } // 닉네임 없으면 로비로
+    if (!name) { location.replace('../index.html'); return null; } // 이름 없으면 로비로
 
     document.title = info.title;
     const wrap = document.createElement('div');
